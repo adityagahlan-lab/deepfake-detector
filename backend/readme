@@ -1,0 +1,93 @@
+# Real-Time Deepfake Detection Platform
+
+**SIH 2026 | Problem Statement USICT028 | Category: AI Safety & Media Verification**
+
+A real-time deepfake detection platform for live video streams. Analyzes each frame using a Vision Transformer, aggregates predictions temporally, and triggers alerts on sustained high-confidence detections.
+
+## Features
+
+- 📹 Live webcam capture with face detection
+- 📁 Upload video file mode (with real-time or full-analysis playback)
+- 🤖 Pre-trained Vision Transformer model (`prithivMLmods/Deep-Fake-Detector-Model`)
+- 🎨 Color-coded bounding boxes (green = REAL, orange = SUSPICIOUS, red = FAKE)
+- 📊 Live metrics: confidence, smoothed score, FPS, model latency, face count
+- 🚨 Temporal alert logic (N consecutive high-confidence frames → alert)
+- 📝 Timestamped alert log
+
+## Setup
+
+### 1. Prerequisites
+- Python 3.13
+- Windows / Mac / Linux
+- Optional: NVIDIA GPU for faster inference
+
+### 2. Install
+
+```bash
+cd backend
+python -m venv venv
+venv\Scripts\activate       # Windows PowerShell
+# source venv/bin/activate  # Mac/Linux
+
+pip install -r requirements.txt
+```
+
+*(If PowerShell blocks the activate script, run `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` first.)*
+
+### 3. Run
+
+```bash
+streamlit run app.py
+```
+
+App opens at `http://localhost:8501`. First run downloads the model (~350 MB).
+
+## Config (edit in `app.py`)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `WINDOW_SIZE` | 5 | Rolling window for score smoothing |
+| `ALERT_THRESHOLD` | 0.6 | Smoothed score above this = alert territory |
+| `CONSECUTIVE_ALERTS_NEEDED` | 3 | Consecutive over-threshold checks before firing an alert |
+| `FRAME_SKIP` | 10 | Run model every Nth frame (set to 1 on GPU) |
+
+## GPU Migration
+
+When moving to a CUDA-capable GPU:
+
+```bash
+pip uninstall torch torchvision -y
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+Then in `app.py`, set `FRAME_SKIP = 1` and increase webcam resolution to 1280x720.
+
+Model auto-detects the GPU — no other code changes needed.
+
+## Architecture
+Live Video / Uploaded File
+↓
+Frame Extraction (OpenCV)
+↓
+Face Detection (Haar Cascade)
+↓
+Pre-processing (crop, resize to 224x224)
+↓
+Deepfake Detection (Vision Transformer)
+↓
+Temporal Aggregation (rolling window)
+↓
+Alert Logic (streak-based)
+↓
+Dashboard (Streamlit)
+
+
+## Known Limitations
+
+- CPU inference is slow (~500-800 ms/frame). Real-time performance requires GPU.
+- Haar Cascade face detector struggles with side profiles and heavy occlusion. Production should use MediaPipe or MTCNN.
+- Model is pre-trained on general deepfake datasets — fine-tuning on domain-specific data would improve accuracy.
+
+## Team
+
+**[Your team name]** — SIH 2026, USICT028
