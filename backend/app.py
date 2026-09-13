@@ -16,6 +16,8 @@ from pipeline.aggregator import TemporalAggregator
 from pipeline.fusion import MultimodalFusion
 from inputs.webcam import WebcamSource
 from inputs.video_file import VideoFileSource
+from inputs.audio_extract import extract_audio_from_video, slice_audio_for_frame
+from inputs.microphone import MicrophoneSource, SOUNDDEVICE_AVAILABLE
 
 
 # ============================================================
@@ -64,20 +66,29 @@ def load_pipeline():
     """Instantiate all detectors + aggregator + fusion. Cached."""
     face = FaceDetector()
 
-    video = VideoDeepfakeDetector()
-    video.load()
+    # Primary video detector (ViT)
+    video_primary = VideoDeepfakeDetector(model_name=config.VIDEO_MODEL_PRIMARY)
+    video_primary.load()
 
-    audio = AudioDeepfakeDetector()   # stub, does nothing yet
+    # Secondary video detector (EfficientNet) — for ensemble
+    video_secondary = VideoDeepfakeDetector(model_name=config.VIDEO_MODEL_SECONDARY)
+    video_secondary.load()
+
+    audio = AudioDeepfakeDetector()
     audio.load()
 
     fusion = MultimodalFusion()
-    return face, video, audio, fusion
+    return face, video_primary, video_secondary, audio, fusion
 
 
-with st.spinner("Loading detection pipeline..."):
-    face_detector, video_detector, audio_detector, fusion = load_pipeline()
+with st.spinner("Loading detection pipeline (downloads ~500 MB first run)..."):
+    face_detector, video_primary, video_secondary, audio_detector, fusion = load_pipeline()
 
-st.success(f"✅ Pipeline ready on **{video_detector.device.upper()}**")
+st.success(
+    f"✅ Pipeline ready on **{video_primary.device.upper()}** · "
+    f"Signals: Video-ViT + Video-EfficientNet + Audio"
+)
+
 st.markdown("---")
 
 
@@ -94,7 +105,7 @@ def classify(score):
         return "FAKE", (0, 0, 255)
 
 
-def process_frame(frame_bgr, aggregator, frame_count):
+def process_frame(frame_bgr, aggregator, frame_count, audio_slice=None, audio_sr=16000):
     """
     Run the full detection pipeline on a single frame.
     Returns the annotated frame plus a dict of metrics.
@@ -118,11 +129,20 @@ def process_frame(frame_bgr, aggregator, frame_count):
         cache_key = f"last_score_{box[0]}_{box[1]}"
         if run_model:
             t0 = time.time()
-            video_score = video_detector.predict(crop)
-            audio_score = audio_detector.predict(None)  # stub returns None
+
+            # Run BOTH video models in parallel (well, sequentially for now)
+            video_primary_score = video_primary.predict(crop)
+            video_secondary_score = video_secondary.predict(crop)
+
+            # Audio inference (only if we have a slice — webcam mode has no audio yet)
+            if audio_slice is not None and audio_detector.is_available():
+                audio_score = audio_detector.predict(audio_slice, sample_rate=audio_sr)
+            else:
+                audio_score = None
 
             result = fusion.fuse({
-                "video_primary": video_score,
+                "video_primary": video_primary_score,
+                "video_secondary": video_secondary_score,
                 "audio": audio_score,
             })
             fused_score = result["fused_score"]
@@ -214,6 +234,8 @@ col_video, col_info = st.columns([2, 1])
 with col_video:
     st.subheader("Video Feed")
     video_placeholder = st.empty()
+    mic_label_placeholder = st.empty()
+    mic_meter_placeholder = st.empty()
 
 with col_info:
     st.subheader("Detection Status")
@@ -225,6 +247,8 @@ with col_info:
         "latency":     st.empty(),
         "faces":       st.empty(),
         "explanation": st.empty(),
+        "mic_label":   mic_label_placeholder,
+        "mic_meter":   mic_meter_placeholder,
     }
     st.markdown("---")
     st.subheader("🚨 Alert Log")
@@ -239,11 +263,16 @@ if "running" not in st.session_state:
 if "aggregator" not in st.session_state:
     st.session_state.aggregator = TemporalAggregator()
 
+if "microphone" not in st.session_state:
+    st.session_state.microphone = MicrophoneSource() if SOUNDDEVICE_AVAILABLE else None
+
 
 # ============================================================
 # MODE HANDLERS
 # ============================================================
-def run_source(source, is_stream, progress_bar=None):
+def run_source(source, is_stream, progress_bar=None,
+               full_audio=None, audio_sr=16000, video_fps=30,
+               live_mic=None):
     """Shared frame loop for webcam and video-file sources."""
     aggregator = st.session_state.aggregator
     aggregator.reset()
@@ -259,7 +288,22 @@ def run_source(source, is_stream, progress_bar=None):
         if not ret:
             break
 
-        annotated, metrics = process_frame(frame, aggregator, frame_count)
+        # Get audio slice: from full extracted track (video file mode)
+        # OR from live mic buffer (webcam mode)
+        audio_slice = None
+        current_audio_sr = audio_sr
+        if full_audio is not None:
+            audio_slice = slice_audio_for_frame(
+                full_audio, audio_sr, frame_count, video_fps, window_seconds=1.0
+            )
+        elif live_mic is not None and live_mic.is_running():
+            audio_slice = live_mic.get_last_seconds(1.0)
+            current_audio_sr = live_mic.sample_rate
+
+        annotated, metrics = process_frame(
+            frame, aggregator, frame_count,
+            audio_slice=audio_slice, audio_sr=current_audio_sr,
+        )
 
         curr_time = time.time()
         fps = 1 / max(curr_time - prev_time, 1e-6)
@@ -269,6 +313,14 @@ def run_source(source, is_stream, progress_bar=None):
         frame_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
         video_placeholder.image(frame_rgb, channels="RGB")
         render_dashboard(placeholders, metrics, fps)
+                # Live mic VU meter (only in webcam mode with mic on)
+        if live_mic is not None and live_mic.is_running():
+            level = live_mic.get_current_level()
+            placeholders["mic_label"].caption(f"🎤 Mic level")
+            placeholders["mic_meter"].progress(level)
+        else:
+            placeholders["mic_label"].empty()
+            placeholders["mic_meter"].empty()
 
         # Alert log
         alerts = aggregator.recent_alerts(5)
@@ -288,16 +340,34 @@ if mode == "📹 Live Webcam":
     with col_video:
         start = st.button("▶ Start Camera", type="primary", key="start_cam")
         stop = st.button("⏹ Stop Camera", key="stop_cam")
+        use_mic = st.checkbox(
+            "🎤 Also analyze microphone audio",
+            value=True,
+            disabled=not SOUNDDEVICE_AVAILABLE,
+            help=("Adds live audio deepfake detection to the fusion."
+                  if SOUNDDEVICE_AVAILABLE
+                  else "Install sounddevice to enable live mic audio."),
+        )
 
     if start:
         st.session_state.running = True
+        # Start mic if requested
+        if use_mic and st.session_state.microphone is not None:
+            ok = st.session_state.microphone.start()
+            if not ok:
+                st.warning(
+                    f"⚠ Could not start mic: {st.session_state.microphone.last_error()}"
+                )
     if stop:
         st.session_state.running = False
+        if st.session_state.microphone is not None:
+            st.session_state.microphone.stop()
 
     if st.session_state.running:
+        mic = st.session_state.microphone if use_mic else None
         try:
             with WebcamSource() as cam:
-                run_source(cam, is_stream=True)
+                run_source(cam, is_stream=True, live_mic=mic)
         except RuntimeError as e:
             st.error(f"❌ {e}")
     else:
@@ -329,6 +399,15 @@ elif mode == "📁 Upload Video File":
 
         if analyze:
             playback_mode = "real_time" if "Real-time" in playback else "full"
+
+            # Extract audio track (may be None if video has no audio)
+            with st.spinner("Extracting audio..."):
+                full_audio, audio_sr = extract_audio_from_video(tfile.name)
+            if full_audio is not None:
+                st.success(f"🔊 Audio extracted: {len(full_audio) / audio_sr:.1f}s @ {audio_sr} Hz")
+            else:
+                st.warning("⚠ No audio track found — running video-only detection.")
+
             try:
                 with VideoFileSource(tfile.name, playback_mode=playback_mode) as vsrc:
                     info = vsrc.info()
@@ -338,7 +417,11 @@ elif mode == "📁 Upload Video File":
                         f"reading every {info['read_skip']} frame(s)"
                     )
                     progress = st.progress(0)
-                    run_source(vsrc, is_stream=False, progress_bar=progress)
+                    run_source(
+                        vsrc, is_stream=False, progress_bar=progress,
+                        full_audio=full_audio, audio_sr=audio_sr or 16000,
+                        video_fps=info["video_fps"],
+                    )
                     progress.progress(1.0)
                 st.success("✅ Analysis complete.")
             except RuntimeError as e:
