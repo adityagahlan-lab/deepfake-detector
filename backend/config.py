@@ -42,8 +42,15 @@ VIDEO_MODEL_SECONDARY = "dima806/deepfake_vs_real_image_detection"  # for future
 AUDIO_MODEL = "MelodyMachine/Deepfake-audio-detection-V2"
 
 # ============================================================
-# FUSION WEIGHTS (Phase 2 - multi-model ensemble)
+# FUSION WEIGHTS (multi-model ensemble)
 # ============================================================
-FUSION_WEIGHT_VIDEO_PRIMARY = 0.5
-FUSION_WEIGHT_VIDEO_SECONDARY = 0.3
-FUSION_WEIGHT_AUDIO = 0.2
+FUSION_WEIGHT_VIDEO_PRIMARY = 0.35
+FUSION_WEIGHT_VIDEO_SECONDARY = 0.25
+FUSION_WEIGHT_AUDIO = 0.15
+FUSION_WEIGHT_TEMPORAL = 0.25         # our custom-trained LSTM
+
+# ============================================================
+# LSTM TEMPORAL MODEL
+# ============================================================
+TEMPORAL_SEQUENCE_LEN = 30            # frames buffered before temporal inference
+TEMPORAL_MIN_LEN = 15                 # minimum frames before we even try
