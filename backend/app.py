@@ -4,6 +4,7 @@ Streamlit UI layer. All ML / pipeline logic lives in the modules.
 """
 import time
 import tempfile
+from collections import deque
 
 import cv2
 import streamlit as st
@@ -12,6 +13,7 @@ import config
 from detectors.face import FaceDetector
 from detectors.video import VideoDeepfakeDetector
 from detectors.audio import AudioDeepfakeDetector
+from detectors.temporal import TemporalLSTMDetector
 from pipeline.aggregator import TemporalAggregator
 from pipeline.fusion import MultimodalFusion
 from inputs.webcam import WebcamSource
@@ -77,16 +79,33 @@ def load_pipeline():
     audio = AudioDeepfakeDetector()
     audio.load()
 
+    # Temporal LSTM (our custom-trained model)
+    temporal = TemporalLSTMDetector()
+    temporal.load()
+
+    # Separate ViT for embedding extraction (feeds the LSTM)
+    # Uses a plain ViT because the classifier ViT is SigLIP-based
+    from transformers import AutoImageProcessor, AutoModel
+    import torch as _torch
+    device = "cuda" if _torch.cuda.is_available() else "cpu"
+    embed_processor = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224")
+    embed_model = AutoModel.from_pretrained("google/vit-base-patch16-224").to(device).eval()
+
     fusion = MultimodalFusion()
-    return face, video_primary, video_secondary, audio, fusion
+    return face, video_primary, video_secondary, audio, temporal, embed_processor, embed_model, device, fusion
 
 
-with st.spinner("Loading detection pipeline (downloads ~500 MB first run)..."):
-    face_detector, video_primary, video_secondary, audio_detector, fusion = load_pipeline()
+with st.spinner("Loading detection pipeline (downloads ~800 MB first run)..."):
+    (face_detector, video_primary, video_secondary, audio_detector,
+     temporal_detector, embed_processor, embed_model, embed_device,
+     fusion) = load_pipeline()
+
+signals_line = "Video-ViT + Video-EfficientNet + Audio"
+if temporal_detector.is_available():
+    signals_line += " + Temporal-LSTM"
 
 st.success(
-    f"✅ Pipeline ready on **{video_primary.device.upper()}** · "
-    f"Signals: Video-ViT + Video-EfficientNet + Audio"
+    f"✅ Pipeline ready on **{video_primary.device.upper()}** · Signals: {signals_line}"
 )
 
 st.markdown("---")
@@ -140,10 +159,35 @@ def process_frame(frame_bgr, aggregator, frame_count, audio_slice=None, audio_sr
             else:
                 audio_score = None
 
+            # ---------- LSTM temporal signal ----------
+            temporal_score = None
+            if temporal_detector.is_available():
+                try:
+                    import torch as _torch
+                    import numpy as _np
+                    from PIL import Image as _Image
+                    face_resized = cv2.resize(crop, (224, 224))
+                    face_rgb = cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
+                    emb_inputs = embed_processor(
+                        images=_Image.fromarray(face_rgb),
+                        return_tensors="pt"
+                    ).to(embed_device)
+                    with _torch.no_grad():
+                        emb_out = embed_model(**emb_inputs)
+                        cls_emb = emb_out.last_hidden_state[:, 0, :].cpu().numpy()[0]
+                    st.session_state.embedding_buffer.append(cls_emb)
+
+                    if len(st.session_state.embedding_buffer) >= config.TEMPORAL_MIN_LEN:
+                        seq = _np.stack(list(st.session_state.embedding_buffer), axis=0)
+                        temporal_score = temporal_detector.predict(seq)
+                except Exception as _e:
+                    temporal_score = None
+
             result = fusion.fuse({
                 "video_primary": video_primary_score,
                 "video_secondary": video_secondary_score,
                 "audio": audio_score,
+                "temporal": temporal_score,
             })
             fused_score = result["fused_score"]
             explanation = fusion.explanation(result)
@@ -265,6 +309,8 @@ if "aggregator" not in st.session_state:
 
 if "microphone" not in st.session_state:
     st.session_state.microphone = MicrophoneSource() if SOUNDDEVICE_AVAILABLE else None
+if "embedding_buffer" not in st.session_state:
+    st.session_state.embedding_buffer = deque(maxlen=config.TEMPORAL_SEQUENCE_LEN)
 
 
 # ============================================================

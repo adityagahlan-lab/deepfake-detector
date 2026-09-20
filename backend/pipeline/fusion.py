@@ -38,6 +38,7 @@ class MultimodalFusion:
             "video_primary": w_video_primary if w_video_primary is not None else config.FUSION_WEIGHT_VIDEO_PRIMARY,
             "video_secondary": w_video_secondary if w_video_secondary is not None else config.FUSION_WEIGHT_VIDEO_SECONDARY,
             "audio": w_audio if w_audio is not None else config.FUSION_WEIGHT_AUDIO,
+            "temporal": config.FUSION_WEIGHT_TEMPORAL,
         }
 
     def fuse(self, scores: dict):
