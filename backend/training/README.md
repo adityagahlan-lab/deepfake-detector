@@ -1,4 +1,4 @@
-# SPARTA — LSTM Temporal Model Training
+# SATYA NETRA — LSTM Temporal Model Training
 
 This folder contains everything needed to train the custom LSTM temporal
 classifier on the FaceForensics++ dataset. The main app (`app.py`) uses

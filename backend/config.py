@@ -1,5 +1,5 @@
 """
-Central configuration for SPARTA Deepfake Detection Platform.
+Central configuration for SATYA NETRA Deepfake Detection Platform.
 All tunable parameters live here so teammates can adjust without hunting.
 """
 

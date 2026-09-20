@@ -43,6 +43,12 @@ import config
 
 BATCH_SIZE = 32     # face crops processed at once; adjust if GPU OOM
 
+# Pure vision transformer for EMBEDDINGS (not the classifier used in the live app).
+# We deliberately use a different, plain ViT here because the live-app classifier
+# is a SigLIP-based model that needs text input when used as a raw backbone.
+# 768-dim CLS output matches our LSTM's expected embedding_dim.
+EMBEDDING_MODEL = "google/vit-base-patch16-224"
+
 
 def load_vit(model_name: str):
     """Load ViT for FEATURE extraction (not classification)."""
@@ -133,7 +139,7 @@ def main():
 
     faces_root = Path(args.faces_root)
     embeddings_root = Path(args.embeddings_root)
-    model_name = args.model or config.VIDEO_MODEL_PRIMARY
+    model_name = args.model or EMBEDDING_MODEL
 
     print(f"Loading model: {model_name}")
     processor, model, device = load_vit(model_name)

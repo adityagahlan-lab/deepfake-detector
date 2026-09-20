@@ -1,5 +1,5 @@
 """
-SPARTA — Real-Time Deepfake Detection Platform
+SATYA NETRA — Real-Time Deepfake Detection Platform
 Streamlit UI layer. All ML / pipeline logic lives in the modules.
 """
 import time
@@ -24,12 +24,12 @@ from inputs.microphone import MicrophoneSource, SOUNDDEVICE_AVAILABLE
 # PAGE SETUP
 # ============================================================
 st.set_page_config(
-    page_title="SPARTA — Deepfake Detection Platform",
+    page_title="SATYA NETRA — Deepfake Detection Platform",
     page_icon="🛡",
     layout="wide",
 )
 
-st.title("🛡 SPARTA — Real-Time Deepfake Detection Platform")
+st.title("🛡 SATYA NETRA — Real-Time Deepfake Detection Platform")
 st.caption("SIH 2026 | USICT028 | AI Safety & Media Verification")
 
 

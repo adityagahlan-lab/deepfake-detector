@@ -1,27 +1,51 @@
-# Real-Time Deepfake Detection Platform
+# SATYA NETRA — Real-Time Multimodal Deepfake Detection Platform
 
 **SIH 2026 | Problem Statement USICT028 | Category: AI Safety & Media Verification**
 
-A real-time deepfake detection platform for live video streams. Analyzes each frame using a Vision Transformer, aggregates predictions temporally, and triggers alerts on sustained high-confidence detections.
+SATYA NETRA is a real-time deepfake detection platform for live video streams.
+It combines **multiple deep-learning models** through a custom multimodal
+fusion engine with temporal aggregation and streak-based alerting.
 
-## Features
+## What's inside
 
-- 📹 Live webcam capture with face detection
-- 📁 Upload video file mode (with real-time or full-analysis playback)
-- 🤖 Pre-trained Vision Transformer model (`prithivMLmods/Deep-Fake-Detector-Model`)
-- 🎨 Color-coded bounding boxes (green = REAL, orange = SUSPICIOUS, red = FAKE)
-- 📊 Live metrics: confidence, smoothed score, FPS, model latency, face count
-- 🚨 Temporal alert logic (N consecutive high-confidence frames → alert)
-- 📝 Timestamped alert log
+- **Three pre-trained detectors** — Vision Transformer (ViT), EfficientNet
+  (secondary visual detector), and a Wav2Vec2-derived audio classifier
+- **Custom-trained LSTM temporal classifier** — trained in-house on
+  FaceForensics++ using ViT-derived frame embeddings (val AUC 0.80, F1 0.77)
+- **Custom multimodal fusion engine** — combines all four signals with
+  configurable weights and graceful degradation when signals are missing
+- **Temporal aggregation** — rolling window + streak-based alert logic
+- **Live capture + video-file modes** — webcam with mic (with VU meter)
+  and uploaded videos with real-time or full-analysis playback
+- **Streamlit dashboard** — per-signal confidence, fused score, latency, FPS,
+  alert log
+
+## Architecture
+Live Video / Uploaded File
+↓
+Frame Extraction + Audio Extraction (or live mic)
+↓
+Face Detection (Haar Cascade)
+↓
+┌────────┬────────┬────────┬────────┐
+↓ ↓ ↓ ↓ ↓
+ViT EfficientNet Audio Temporal-LSTM (custom-trained)
+└────────┴────────┴────────┴────────┘
+↓
+Multimodal Fusion Engine
+↓
+Temporal Aggregator (rolling window + streak)
+↓
+Live Dashboard + Alert Log
 
 ## Setup
 
-### 1. Prerequisites
+### Prerequisites
 - Python 3.13
 - Windows / Mac / Linux
 - Optional: NVIDIA GPU for faster inference
 
-### 2. Install
+### Install
 
 ```bash
 cd backend
@@ -32,62 +56,152 @@ venv\Scripts\activate       # Windows PowerShell
 pip install -r requirements.txt
 ```
 
-*(If PowerShell blocks the activate script, run `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` first.)*
+*(If PowerShell blocks the activate script, run
+`Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` first.)*
 
-### 3. Run
+### Run
 
 ```bash
 streamlit run app.py
 ```
 
-App opens at `http://localhost:8501`. First run downloads the model (~350 MB).
+App opens at `http://localhost:8501`. First run downloads pre-trained models
+(~500 MB total, one-time).
 
-## Config (edit in `app.py`)
+## Project structure
+backend/
+├── app.py # Streamlit UI layer
+├── config.py # All tunable parameters
+├── requirements.txt
+├── detectors/
+│ ├── face.py # Face detection (Haar Cascade)
+│ ├── video.py # Visual deepfake models (ViT + EfficientNet)
+│ ├── audio.py # Audio deepfake model
+│ └── temporal.py # LSTM temporal classifier (loads trained .pt)
+├── pipeline/
+│ ├── aggregator.py # Rolling window + streak-based alerts
+│ └── fusion.py # Multimodal fusion algorithm
+├── inputs/
+│ ├── webcam.py # Live webcam capture
+│ ├── microphone.py # Live mic capture with ring buffer + VU meter
+│ ├── audio_extract.py # Extract audio from uploaded video (ffmpeg)
+│ ├── video_file.py # Uploaded video file processing
+│ └── webrtc.py # WebRTC stub (Phase 3)
+└── training/ # LSTM training pipeline (see training/README.md)
+├── lstm_model.py # LSTM architecture
+├── ff_dataset.py # FaceForensics++ dataset loader
+├── extract_faces.py # Video → face crops
+├── generate_embeddings.py# Face crops → ViT embeddings
+├── train_lstm.py # Training loop
+└── models/
+└── lstm_temporal.pt # Trained model weights
 
-| Setting | Default | Meaning |
+
+## Configuration (edit `config.py`)
+
+| Setting | Default | Purpose |
 |---|---|---|
 | `WINDOW_SIZE` | 5 | Rolling window for score smoothing |
 | `ALERT_THRESHOLD` | 0.6 | Smoothed score above this = alert territory |
-| `CONSECUTIVE_ALERTS_NEEDED` | 3 | Consecutive over-threshold checks before firing an alert |
+| `CONSECUTIVE_ALERTS_NEEDED` | 3 | Consecutive over-threshold before alert fires |
 | `FRAME_SKIP` | 10 | Run model every Nth frame (set to 1 on GPU) |
+| `FUSION_WEIGHT_VIDEO_PRIMARY` | 0.35 | ViT weight |
+| `FUSION_WEIGHT_VIDEO_SECONDARY` | 0.25 | EfficientNet weight |
+| `FUSION_WEIGHT_AUDIO` | 0.15 | Audio detector weight |
+| `FUSION_WEIGHT_TEMPORAL` | 0.25 | LSTM temporal weight |
 
-## GPU Migration
+## LSTM training
+
+See `training/README.md` for full details on training the temporal LSTM
+on FaceForensics++.
+
+Current trained model metrics (`training/models/lstm_metrics.json`):
+
+- Accuracy    : 73%
+- Precision   : 69%
+- Recall      : 86%
+- F1 Score    : 0.77
+- ROC-AUC     : 0.80
+
+Trained on 1000 real + 1000 fake videos from FaceForensics++ (c23,
+Deepfakes / Face2Face / FaceSwap / NeuralTextures methods).
+
+## GPU migration
 
 When moving to a CUDA-capable GPU:
 
 ```bash
 pip uninstall torch torchvision -y
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
 ```
 
-Then in `app.py`, set `FRAME_SKIP = 1` and increase webcam resolution to 1280x720.
+Then in `config.py` set `FRAME_SKIP = 1` and increase `WEBCAM_WIDTH/HEIGHT`
+to `1280x720`. Model auto-detects GPU — no other code changes needed.
 
-Model auto-detects the GPU — no other code changes needed.
+## Known limitations
 
-## Architecture
-Live Video / Uploaded File
-↓
-Frame Extraction (OpenCV)
-↓
-Face Detection (Haar Cascade)
-↓
-Pre-processing (crop, resize to 224x224)
-↓
-Deepfake Detection (Vision Transformer)
-↓
-Temporal Aggregation (rolling window)
-↓
-Alert Logic (streak-based)
-↓
-Dashboard (Streamlit)
-
-
-## Known Limitations
-
-- CPU inference is slow (~500-800 ms/frame). Real-time performance requires GPU.
-- Haar Cascade face detector struggles with side profiles and heavy occlusion. Production should use MediaPipe or MTCNN.
-- Model is pre-trained on general deepfake datasets — fine-tuning on domain-specific data would improve accuracy.
+- CPU inference is slow (~500-800 ms/frame per visual model). Real-time
+  performance requires GPU.
+- Haar Cascade face detector struggles with side profiles and occlusion.
+  MediaPipe or MTCNN is planned for improvement.
+- Live audio deepfake detection requires a microphone; uploaded videos
+  without an audio track fall back to video-only fusion.
 
 ## Team
 
-**[Your team name]** — SIH 2026, USICT028
+**Team SPARTAN** — SIH 2026, USICT028
+
+
+## Configuration (edit `config.py`)
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `WINDOW_SIZE` | 5 | Rolling window for score smoothing |
+| `ALERT_THRESHOLD` | 0.6 | Smoothed score above this = alert territory |
+| `CONSECUTIVE_ALERTS_NEEDED` | 3 | Consecutive over-threshold before alert fires |
+| `FRAME_SKIP` | 10 | Run model every Nth frame (set to 1 on GPU) |
+| `FUSION_WEIGHT_VIDEO_PRIMARY` | 0.35 | ViT weight |
+| `FUSION_WEIGHT_VIDEO_SECONDARY` | 0.25 | EfficientNet weight |
+| `FUSION_WEIGHT_AUDIO` | 0.15 | Audio detector weight |
+| `FUSION_WEIGHT_TEMPORAL` | 0.25 | LSTM temporal weight |
+
+## LSTM training
+
+See `training/README.md` for full details on training the temporal LSTM
+on FaceForensics++.
+
+Current trained model metrics (`training/models/lstm_metrics.json`):
+
+- Accuracy    : 73%
+- Precision   : 69%
+- Recall      : 86%
+- F1 Score    : 0.77
+- ROC-AUC     : 0.80
+
+Trained on 1000 real + 1000 fake videos from FaceForensics++ (c23,
+Deepfakes / Face2Face / FaceSwap / NeuralTextures methods).
+
+## GPU migration
+
+When moving to a CUDA-capable GPU:
+
+```bash
+pip uninstall torch torchvision -y
+pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
+```
+
+Then in `config.py` set `FRAME_SKIP = 1` and increase `WEBCAM_WIDTH/HEIGHT`
+to `1280x720`. Model auto-detects GPU — no other code changes needed.
+
+## Known limitations
+
+- CPU inference is slow (~500-800 ms/frame per visual model). Real-time
+  performance requires GPU.
+- Haar Cascade face detector struggles with side profiles and occlusion.
+  MediaPipe or MTCNN is planned for improvement.
+- Live audio deepfake detection requires a microphone; uploaded videos
+  without an audio track fall back to video-only fusion.
+
+## Team
+
+**Team SPARTAN** — SIH 2026, USICT028

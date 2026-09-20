@@ -1,62 +1,50 @@
 """
 Extract face crops from FaceForensics++ videos.
 
-Expected FF++ folder layout (matches the official dataset structure):
+Adapted for the Kaggle `xdxd003/ff-c23` layout (flatter than official FF++):
 
-    data/
-    ├── original_sequences/
-    │   └── youtube/c23/videos/*.mp4         # REAL videos
-    └── manipulated_sequences/
-        ├── Deepfakes/c23/videos/*.mp4       # FAKE, method 1
-        ├── Face2Face/c23/videos/*.mp4       # FAKE, method 2
-        ├── FaceSwap/c23/videos/*.mp4        # FAKE, method 3
-        └── NeuralTextures/c23/videos/*.mp4  # FAKE, method 4
+    FaceForensics++_C23/
+    ├── original/*.mp4              ← real videos
+    ├── Deepfakes/*.mp4             ← fake method 1
+    ├── Face2Face/*.mp4             ← fake method 2
+    ├── FaceShifter/*.mp4           ← fake method 3
+    ├── FaceSwap/*.mp4              ← fake method 4
+    └── NeuralTextures/*.mp4        ← fake method 5
 
-Output layout:
+Output layout (per-video subfolders — LSTM-compatible):
 
     faces/
     ├── real/
-    │   ├── 000/000.jpg  000/001.jpg  ...    # one folder per video
+    │   ├── 000/                    (000.jpg, 001.jpg, ...)
     │   └── ...
     └── fake/
-        ├── 000_Deepfakes/000.jpg  ...
-        ├── 000_Face2Face/000.jpg  ...
+        ├── 000_Deepfakes/          (000.jpg, 001.jpg, ...)
+        ├── 000_Face2Face/          ...
         └── ...
 
-Runtime notes:
-  * Uses OpenCV's Haar cascade for face detection (fast, CPU-friendly)
-  * Sampling every Nth frame (default 5) to control dataset size
-  * Skips videos where fewer than MIN_FACES faces are detected
-  * Safe to interrupt and re-run — skips videos already processed
+Safe to interrupt and re-run — skips folders already fully processed.
 """
 import argparse
-import os
-import sys
+import random
 from pathlib import Path
 
 import cv2
 from tqdm import tqdm
 
 
-FRAME_STRIDE   = 5        # process every 5th frame
-FACE_INPUT     = 224      # output crop size (matches ViT input)
-MIN_FACES      = 10       # videos with < 10 detected faces are skipped
+FRAME_STRIDE = 10        # every Nth frame (was 5; 10 halves CPU time)
+FACE_INPUT   = 224
+MIN_FACES    = 8         # skip videos with fewer than this many face crops
 
 
 def get_face_detector():
-    """OpenCV Haar cascade — fast enough for dataset prep."""
     return cv2.CascadeClassifier(
         cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     )
 
 
 def extract_from_video(video_path: Path, out_dir: Path, detector) -> int:
-    """
-    Extract face crops from a single video. Returns count of saved faces.
-    Skips silently if out_dir already exists AND has crops.
-    """
     if out_dir.exists() and any(out_dir.glob("*.jpg")):
-        # Already processed — count and return
         return len(list(out_dir.glob("*.jpg")))
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -76,7 +64,6 @@ def extract_from_video(video_path: Path, out_dir: Path, detector) -> int:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             faces = detector.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))
             if len(faces) > 0:
-                # Take the largest face in the frame
                 x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
                 crop = frame[y:y + h, x:x + w]
                 if crop.size > 0:
@@ -92,7 +79,6 @@ def extract_from_video(video_path: Path, out_dir: Path, detector) -> int:
 
     cap.release()
 
-    # If too few faces found, remove the folder so caller knows to skip
     if saved_idx < MIN_FACES:
         for f in out_dir.glob("*.jpg"):
             f.unlink()
@@ -105,28 +91,21 @@ def extract_from_video(video_path: Path, out_dir: Path, detector) -> int:
     return saved_idx
 
 
-def process_directory(video_root: Path,
-                      output_root: Path,
-                      label: str,
-                      method_tag: str,
-                      detector,
-                      max_videos: int = None):
-    """
-    Process every video in video_root and save face crops under output_root/<label>/.
-
-    label      : "real" or "fake" — determines top-level output subfolder
-    method_tag : appended to output folder names ("" for real, "Deepfakes" etc. for fake)
-    max_videos : optional cap for quick testing (None = all)
-    """
-    videos = sorted(video_root.glob("*.mp4"))
-    if max_videos:
-        videos = videos[:max_videos]
-
+def process_folder(video_dir: Path, output_root: Path, label: str,
+                   method_tag: str, detector, limit: int = None,
+                   seed: int = 42):
+    videos = sorted(video_dir.glob("*.mp4"))
     if not videos:
-        print(f"[warn] No .mp4 files in {video_root}")
+        print(f"[warn] no .mp4 files in {video_dir}")
         return 0, 0
 
-    print(f"\n[{label} / {method_tag or 'youtube'}] {len(videos)} videos in {video_root}")
+    if limit and len(videos) > limit:
+        # Deterministic random sample so re-runs pick the same videos
+        rng = random.Random(seed)
+        videos = rng.sample(videos, limit)
+        videos.sort()
+
+    print(f"\n[{label} / {method_tag or 'original'}] {len(videos)} videos")
 
     n_ok = 0
     n_faces_total = 0
@@ -143,13 +122,15 @@ def process_directory(video_root: Path,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract face crops from FaceForensics++")
+    parser = argparse.ArgumentParser(description="Extract face crops (Kaggle FF++ layout)")
     parser.add_argument("--data-root",   required=True,
-                        help="Path to FF++ data root (containing original_sequences/ and manipulated_sequences/)")
+                        help="Path to FaceForensics++_C23 folder")
     parser.add_argument("--output-root", required=True,
                         help="Where to write face crops (e.g. training/faces/)")
-    parser.add_argument("--max-videos",  type=int, default=None,
-                        help="Cap the number of videos per category (for quick testing)")
+    parser.add_argument("--real-limit",  type=int, default=1000,
+                        help="Max number of real videos to process")
+    parser.add_argument("--per-method-limit", type=int, default=250,
+                        help="Max fake videos per manipulation method")
     parser.add_argument("--methods", nargs="+",
                         default=["Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures"],
                         help="Which fake-generation methods to include")
@@ -161,32 +142,34 @@ def main():
 
     detector = get_face_detector()
 
-    # --- REAL videos ---
-    real_dir = data_root / "original_sequences" / "youtube" / "c23" / "videos"
-    n_ok_real, n_faces_real = process_directory(
-        real_dir, output_root, label="real",
-        method_tag="", detector=detector, max_videos=args.max_videos,
+    # ------- REAL -------
+    real_dir = data_root / "original"
+    if not real_dir.exists():
+        print(f"[error] {real_dir} not found. Check --data-root path.")
+        return
+    n_ok_real, n_faces_real = process_folder(
+        real_dir, output_root, "real", "", detector, limit=args.real_limit,
     )
 
-    # --- FAKE videos (one folder per method) ---
-    n_ok_fake_total = 0
-    n_faces_fake_total = 0
+    # ------- FAKE (each method) -------
+    n_ok_fake = 0
+    n_faces_fake = 0
     for method in args.methods:
-        fake_dir = data_root / "manipulated_sequences" / method / "c23" / "videos"
-        if not fake_dir.exists():
-            print(f"[warn] Method folder missing: {fake_dir}")
+        method_dir = data_root / method
+        if not method_dir.exists():
+            print(f"[warn] method folder missing: {method_dir}")
             continue
-        n_ok, n_faces = process_directory(
-            fake_dir, output_root, label="fake",
-            method_tag=method, detector=detector, max_videos=args.max_videos,
+        n_ok, n_faces = process_folder(
+            method_dir, output_root, "fake", method, detector,
+            limit=args.per_method_limit,
         )
-        n_ok_fake_total += n_ok
-        n_faces_fake_total += n_faces
+        n_ok_fake += n_ok
+        n_faces_fake += n_faces
 
     print("\n" + "=" * 60)
     print(f"REAL: {n_ok_real} videos processed, {n_faces_real:,} face crops")
-    print(f"FAKE: {n_ok_fake_total} videos processed, {n_faces_fake_total:,} face crops")
-    print(f"Output written to: {output_root}")
+    print(f"FAKE: {n_ok_fake} videos processed, {n_faces_fake:,} face crops")
+    print(f"Output: {output_root}")
     print("=" * 60)
 
 

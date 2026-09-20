@@ -1,0 +1,32 @@
+# Training data & intermediates - never commit these
+backend/training/data/
+backend/training/faces/
+backend/training/embeddings/
+
+# Zips and large downloads
+*.zip
+*.tar.gz
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+.env
+
+# HuggingFace cache
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# BUT keep trained model files (small, we want these)
+!backend/training/models/
+backend/__pycache__/
+backend/training/__pycache__/
+backend/training/run_log.txt
