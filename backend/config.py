@@ -47,10 +47,10 @@ AUDIO_MODEL = "MelodyMachine/Deepfake-audio-detection-V2"
 FUSION_WEIGHT_VIDEO_PRIMARY = 0.35
 FUSION_WEIGHT_VIDEO_SECONDARY = 0.25
 FUSION_WEIGHT_AUDIO = 0.15
-FUSION_WEIGHT_TEMPORAL = 0.25         # our custom-trained LSTM
+FUSION_WEIGHT_TEMPORAL = 0.15         # our custom-trained LSTM
 
 # ============================================================
 # LSTM TEMPORAL MODEL
 # ============================================================
 TEMPORAL_SEQUENCE_LEN = 30            # frames buffered before temporal inference
-TEMPORAL_MIN_LEN = 15                 # minimum frames before we even try
+TEMPORAL_MIN_LEN = 30                 # minimum frames before we even try

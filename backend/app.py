@@ -20,6 +20,7 @@ from inputs.webcam import WebcamSource
 from inputs.video_file import VideoFileSource
 from inputs.audio_extract import extract_audio_from_video, slice_audio_for_frame
 from inputs.microphone import MicrophoneSource, SOUNDDEVICE_AVAILABLE
+from inputs.screen import ScreenSource, MSS_AVAILABLE as SCREEN_AVAILABLE
 
 
 # ============================================================
@@ -180,7 +181,9 @@ def process_frame(frame_bgr, aggregator, frame_count, audio_slice=None, audio_sr
                     if len(st.session_state.embedding_buffer) >= config.TEMPORAL_MIN_LEN:
                         seq = _np.stack(list(st.session_state.embedding_buffer), axis=0)
                         temporal_score = temporal_detector.predict(seq)
+                        st.session_state.last_temporal = temporal_score
                 except Exception as _e:
+                    print(f"[LSTM] error: {_e}")
                     temporal_score = None
 
             result = fusion.fuse({
@@ -258,16 +261,22 @@ def render_dashboard(placeholders, metrics, fps):
     placeholders["latency"].metric("Model Latency", f"{metrics['inference_ms']:.0f} ms")
     placeholders["faces"].metric("Faces Detected", metrics["faces"])
 
-    if metrics["explanation"]:
-        placeholders["explanation"].caption(f"🧮  {metrics['explanation']}")
-
+    # Fusion explanation + Temporal LSTM status
+    buf = len(st.session_state.get("embedding_buffer", []))
+    last_t = st.session_state.get("last_temporal")
+    if last_t is None:
+        lstm_line = f"🧠 Temporal LSTM: warming up ({buf}/{config.TEMPORAL_MIN_LEN} frames)"
+    else:
+        lstm_line = f"🧠 Temporal LSTM: {last_t * 100:.1f}% fake"
+    expl = metrics.get("explanation", "")
+    placeholders["explanation"].caption(f"🧮 {expl}\n\n{lstm_line}" if expl else lstm_line)
 
 # ============================================================
 # MODE SELECTOR
 # ============================================================
 mode = st.radio(
     "Input Source",
-    ["📹 Live Webcam", "📁 Upload Video File"],
+    ["🖥 Live Stream (Screen)", "📹 Live Webcam", "📁 Upload Video File"],
     horizontal=True,
 )
 st.markdown("---")
@@ -322,6 +331,8 @@ def run_source(source, is_stream, progress_bar=None,
     """Shared frame loop for webcam and video-file sources."""
     aggregator = st.session_state.aggregator
     aggregator.reset()
+    st.session_state.embedding_buffer.clear()
+    st.session_state.last_temporal = None
 
     prev_time = time.time()
     frame_count = 0
@@ -381,8 +392,45 @@ def run_source(source, is_stream, progress_bar=None,
         if progress_bar is not None:
             progress_bar.progress(source.progress())
 
+if mode == "🖥 Live Stream (Screen)":
+    with col_video:
+        if not SCREEN_AVAILABLE:
+            st.error("Screen capture needs mss: pip install mss")
+        monitors = ScreenSource.list_monitors()
+        labels = [f"Screen {i + 1} ({m['width']}x{m['height']})" for i, m in enumerate(monitors)]
+        mon_idx = st.selectbox("Screen to watch", range(len(labels)),
+                               format_func=lambda i: labels[i]) if labels else 0
+        region = None
+        if st.checkbox("Capture only the video player area (recommended)"):
+            c1, c2, c3, c4 = st.columns(4)
+            region = {
+                "left":   int(c1.number_input("Left", 0, value=0, step=10)),
+                "top":    int(c2.number_input("Top", 0, value=0, step=10)),
+                "width":  int(c3.number_input("Width", 100, value=800, step=10)),
+                "height": int(c4.number_input("Height", 100, value=600, step=10)),
+            }
+        start = st.button("▶ Start Watching", type="primary", key="start_screen")
+        stop = st.button("⏹ Stop", key="stop_screen")
 
-if mode == "📹 Live Webcam":
+    if start:
+        st.session_state.running = True
+    if stop:
+        st.session_state.running = False
+
+    if st.session_state.running:
+        try:
+            with ScreenSource(monitor_index=mon_idx + 1, region=region) as scr:
+                run_source(scr, is_stream=True)
+        except RuntimeError as e:
+            st.error(f"❌ {e}")
+    else:
+        video_placeholder.info(
+            "👆 Open the live stream (Instagram Live, YouTube Live, Zoom...) "
+            "in a browser, then click Start Watching."
+        )
+        placeholders["status"].info("⚪ Idle")
+
+elif mode == "📹 Live Webcam":
     with col_video:
         start = st.button("▶ Start Camera", type="primary", key="start_cam")
         stop = st.button("⏹ Stop Camera", key="stop_cam")
